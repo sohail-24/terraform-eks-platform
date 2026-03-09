@@ -19,5 +19,5 @@ variable "node_instance_type" {
 
 variable "desired_size" {
   type    = number
-  default = 10
+  default = 15
 }
