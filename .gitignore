@@ -4,6 +4,7 @@
 *.tfstate.*
 terraform.tfvars
 tfplan
+.terraform.lock.hcl 
 
 # macOS
 .DS_Store
