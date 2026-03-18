@@ -6,6 +6,11 @@ resource "helm_release" "alb_controller" {
 
   namespace = "kube-system"
 
+  wait    = true
+  timeout = 600
+
+  cleanup_on_fail = true
+
   set {
     name  = "clusterName"
     value = var.cluster_name
@@ -35,3 +40,4 @@ resource "helm_release" "alb_controller" {
     kubernetes_service_account.alb_sa
   ]
 }
+

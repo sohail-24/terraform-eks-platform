@@ -8,21 +8,26 @@ resource "helm_release" "argocd" {
 
   create_namespace = false
 
+  wait    = true
+  timeout = 600
+
+  cleanup_on_fail = true
+
   set {
     name  = "server.service.annotations.service\\.beta\\.kubernetes\\.io/aws-load-balancer-scheme"
     value = "internet-facing"
-  } 
-    
+  }
+
   set {
     name  = "server.service.annotations.service\\.beta\\.kubernetes\\.io/aws-load-balancer-type"
     value = "nlb"
-  } 
+  }
+
   set {
     name  = "server.service.type"
     value = "LoadBalancer"
   }
 
-  # Disable heavy components
   set {
     name  = "dex.enabled"
     value = "false"
@@ -42,3 +47,5 @@ resource "helm_release" "argocd" {
     kubernetes_namespace.argocd
   ]
 }
+
+

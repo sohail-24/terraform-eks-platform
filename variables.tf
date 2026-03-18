@@ -1,7 +1,10 @@
 variable "aws_region" {
-  type = string
+  type    = string
+  default = "ap-south-1"
 }
 
 variable "project_name" {
-  type = string
+  type    = string
+  default = "aws_eks"
+
 }
