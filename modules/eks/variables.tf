@@ -14,10 +14,10 @@ variable "private_subnets" {
 
 variable "node_instance_type" {
   type    = string
-  default = "t3.micro"
+  default = "c7i-flex.large"
 }
 
 variable "desired_size" {
   type    = number
-  default = 15
+  default = 4
 }
