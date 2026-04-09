@@ -98,50 +98,12 @@ resource "aws_iam_role_policy_attachment" "node_ecr_policy" {
 }
 
 ############################################
-# EKS WORKER NODE AMI
+# OPTIONAL: SSM FOR DEBUGGING INTO NODES
 ############################################
 
-data "aws_ami" "eks_worker" {
-  most_recent = true
-  owners      = ["602401143452"] # Amazon EKS AMI account
-
-  filter {
-    name   = "name"
-    values = ["amazon-eks-node-*"]
-  }
-}
-
-############################################
-# LAUNCH TEMPLATE FOR NODE GROUP
-# (controls disk size, volume type, instance config)
-############################################
-
-resource "aws_launch_template" "eks_nodes" {
-  name_prefix   = "${var.cluster_name}-node-template-"
-  image_id      = data.aws_ami.eks_worker.id
-  instance_type = var.node_instance_type
-
-  block_device_mappings {
-    device_name = "/dev/xvda"
-
-    ebs {
-      volume_size           = var.node_disk_size
-      volume_type           = "gp3"
-      delete_on_termination = true
-    }
-  }
-
-  tag_specifications {
-    resource_type = "instance"
-
-    tags = {
-      Name = "${var.cluster_name}-node"
-    }
-  }
-
-  tags = {
-    Name = "${var.cluster_name}-launch-template"
-  }
+resource "aws_iam_role_policy_attachment" "node_ssm_policy" {
+  role       = aws_iam_role.node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
 ############################################
@@ -154,25 +116,29 @@ resource "aws_eks_node_group" "nodes" {
   node_role_arn   = aws_iam_role.node_role.arn
   subnet_ids      = var.private_subnets
 
+  instance_types = [var.node_instance_type]
+  disk_size      = var.node_disk_size
+  ami_type       = "AL2_x86_64"
+
   scaling_config {
     desired_size = var.desired_size
     max_size     = 6
     min_size     = 2
   }
 
-  launch_template {
-    id      = aws_launch_template.eks_nodes.id
-    version = "$Latest"
-  }
-
   depends_on = [
     aws_iam_role_policy_attachment.node_worker_policy,
     aws_iam_role_policy_attachment.node_cni_policy,
-    aws_iam_role_policy_attachment.node_ecr_policy
+    aws_iam_role_policy_attachment.node_ecr_policy,
+    aws_iam_role_policy_attachment.node_ssm_policy
   ]
 
   tags = {
     Name = "${var.cluster_name}-node-group"
+  }
+
+  lifecycle {
+    ignore_changes = [scaling_config[0].desired_size]
   }
 }
 
