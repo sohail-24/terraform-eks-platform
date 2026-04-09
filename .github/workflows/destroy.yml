@@ -3,30 +3,170 @@ name: EKS Destroy Pipeline
 on:
   workflow_dispatch:
 
+concurrency:
+  group: eks-destroy-main
+  cancel-in-progress: false
+
 jobs:
   destroy:
+    name: Terraform Destroy + EKS Cleanup
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     env:
       AWS_REGION: ap-south-1
       TF_IN_AUTOMATION: true
+      TF_INPUT: false
+      CLUSTER_NAME: aws_eks-eks
+      NODEGROUP_NAME: aws_eks-eks-nodes
 
     steps:
-      - name: Checkout
+      ############################################
+      # CHECKOUT
+      ############################################
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
+      ############################################
+      # TOOLING
+      ############################################
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
+
+      ############################################
+      # AWS AUTH
+      ############################################
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-south-1
+          aws-region: ${{ env.AWS_REGION }}
 
+      ############################################
+      # TERRAFORM INIT
+      ############################################
       - name: Terraform Init
         run: terraform init
 
+      ############################################
+      # CONFIGURE KUBECONFIG (best effort)
+      ############################################
+      - name: Configure kubeconfig
+        continue-on-error: true
+        run: |
+          echo "🔧 Trying to configure kubeconfig..."
+          aws eks update-kubeconfig \
+            --region $AWS_REGION \
+            --name $CLUSTER_NAME
+
+      ############################################
+      # PRE-DESTROY DEBUG
+      ############################################
+      - name: Pre-Destroy Debug Snapshot
+        continue-on-error: true
+        run: |
+          echo "===== EKS CLUSTER ====="
+          aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION || true
+
+          echo "===== NODEGROUP ====="
+          aws eks describe-nodegroup \
+            --cluster-name $CLUSTER_NAME \
+            --nodegroup-name $NODEGROUP_NAME \
+            --region $AWS_REGION || true
+
+          echo "===== K8S NODES ====="
+          kubectl get nodes -o wide || true
+
+          echo "===== ALL PODS ====="
+          kubectl get pods -A || true
+
+      ############################################
+      # CLEAN ARGOCD APP / NAMESPACE (best effort)
+      ############################################
+      - name: Cleanup ArgoCD App
+        continue-on-error: true
+        run: |
+          echo "🧹 Cleaning ArgoCD application..."
+          kubectl delete application django-ecommerce -n argocd --ignore-not-found=true || true
+
+      - name: Cleanup Ecommerce Namespace
+        continue-on-error: true
+        run: |
+          echo "🧹 Cleaning ecommerce namespace..."
+          kubectl delete namespace ecommerce --ignore-not-found=true || true
+
+      - name: Wait for Namespace Cleanup
+        continue-on-error: true
+        run: |
+          echo "⏳ Waiting for namespace cleanup..."
+          sleep 60
+
+      ############################################
+      # FORCE DELETE NODEGROUP FIRST (VERY IMPORTANT)
+      ############################################
+      - name: Delete EKS Node Group First
+        continue-on-error: true
+        run: |
+          echo "🔥 Deleting node group first..."
+          aws eks delete-nodegroup \
+            --region $AWS_REGION \
+            --cluster-name $CLUSTER_NAME \
+            --nodegroup-name $NODEGROUP_NAME || true
+
+      - name: Wait for Node Group Deletion
+        continue-on-error: true
+        run: |
+          echo "⏳ Waiting for node group deletion..."
+          aws eks wait nodegroup-deleted \
+            --region $AWS_REGION \
+            --cluster-name $CLUSTER_NAME \
+            --nodegroup-name $NODEGROUP_NAME || true
+
+      ############################################
+      # EXTRA AWS CLEANUP BUFFER
+      ############################################
+      - name: Wait for AWS Cleanup Stabilization
+        run: |
+          echo "⏳ Waiting for AWS cleanup stabilization..."
+          sleep 90
+
+      ############################################
+      # TERRAFORM DESTROY
+      ############################################
       - name: Terraform Destroy
         run: terraform destroy -auto-approve
+
+      ############################################
+      # POST-DESTROY VERIFY
+      ############################################
+      - name: Post-Destroy Verification
+        if: always()
+        continue-on-error: true
+        run: |
+          echo "===== VERIFY CLUSTER GONE ====="
+          aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION || true
+
+          echo "===== VERIFY NODEGROUP GONE ====="
+          aws eks describe-nodegroup \
+            --cluster-name $CLUSTER_NAME \
+            --nodegroup-name $NODEGROUP_NAME \
+            --region $AWS_REGION || true
+
+          echo "===== LEFTOVER LOAD BALANCERS ====="
+          aws elbv2 describe-load-balancers --region $AWS_REGION || true
+
+          echo "===== LEFTOVER EC2 INSTANCES ====="
+          aws ec2 describe-instances \
+            --region $AWS_REGION \
+            --filters "Name=instance-state-name,Values=running,pending,stopping,stopped" || true
