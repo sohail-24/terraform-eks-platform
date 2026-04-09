@@ -17,7 +17,7 @@ data "aws_eks_cluster" "cluster" {
 ############################################
 
 locals {
-  oidc_issuer = data.aws_eks_cluster.cluster.identity[0].oidc[0].issuer
+  oidc_issuer   = data.aws_eks_cluster.cluster.identity[0].oidc[0].issuer
   oidc_provider = replace(local.oidc_issuer, "https://", "")
 }
 

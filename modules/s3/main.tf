@@ -4,8 +4,8 @@
 
 resource "aws_s3_bucket" "django_media" {
   bucket = var.bucket_name
-  
-  force_destroy = true  # ✅ ADD THIS LINE
+
+  force_destroy = true # ✅ ADD THIS LINE
 
   tags = {
     Name        = "django-media-storage"
@@ -44,11 +44,11 @@ resource "aws_s3_bucket_versioning" "versioning" {
 resource "aws_s3_bucket_public_access_block" "block_public" {
   bucket = aws_s3_bucket.django_media.id
 
-  block_public_acls       = true
-  ignore_public_acls      = true
+  block_public_acls  = true
+  ignore_public_acls = true
 
-  block_public_policy     = false   # ✅ allow bucket policy
-  restrict_public_buckets = false   # ✅ allow public access
+  block_public_policy     = false # ✅ allow bucket policy
+  restrict_public_buckets = false # ✅ allow public access
 }
 
 ############################################
@@ -87,7 +87,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "lifecycle" {
     id     = "delete-all-versions"
     status = "Enabled"
 
-    filter {}   # ✅ ADD THIS LINE (IMPORTANT)
+    filter {} # ✅ ADD THIS LINE (IMPORTANT)
 
     expiration {
       days = 1
