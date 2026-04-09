@@ -1,0 +1,62 @@
+name: EKS Deploy Pipeline
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: ap-south-1
+      TF_IN_AUTOMATION: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      # ✅ INIT (uses S3 backend automatically)
+      - name: Terraform Init
+        run: terraform init
+
+      # ✅ VALIDATION
+      - name: Terraform Validate
+        run: terraform validate
+
+      # ✅ PLAN
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+
+      # ✅ APPLY
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+      # ✅ CONFIGURE KUBECONFIG
+      - name: Configure kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region ap-south-1 \
+            --name $(terraform output -raw cluster_name || echo "aws_eks-eks")
+
+      # ✅ INSTALL ARGOCD (idempotent)
+      - name: Install ArgoCD
+        run: |
+          kubectl create namespace argocd || true
+          kubectl apply -n argocd \
+            -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+      # ✅ DEPLOY APP
+      - name: Apply ArgoCD App
+        run: kubectl apply -f argocd/app.yaml

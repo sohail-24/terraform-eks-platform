@@ -1,23 +1,32 @@
 variable "cluster_name" {
-  type = string
+  description = "Name of the EKS cluster"
+  type        = string
 }
 
 variable "vpc_id" {
-  type = string
+  description = "VPC ID for the EKS cluster"
+  type        = string
 }
 
 variable "private_subnets" {
-  type = list(string)
+  description = "Private subnet IDs for EKS nodes"
+  type        = list(string)
 }
 
-# This create 2 worker nodes.
-
 variable "node_instance_type" {
-  type    = string
-  default = "c7i-flex.large"
+  description = "EC2 instance type for EKS worker nodes"
+  type        = string
+  default     = "t2.medium"
 }
 
 variable "desired_size" {
-  type    = number
-  default = 4
+  description = "Desired number of worker nodes"
+  type        = number
+  default     = 2
+}
+
+variable "node_disk_size" {
+  description = "Disk size (GB) for EKS worker nodes"
+  type        = number
+  default     = 20
 }

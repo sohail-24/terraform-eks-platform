@@ -16,21 +16,25 @@ module "vpc" {
 }
 
 ############################################
+############################################
 # EKS
 ############################################
 
 module "eks" {
-
   source = "./modules/eks"
 
-  cluster_name    = "${var.project_name}-eks"
-  vpc_id          = module.vpc.vpc_id
-  private_subnets = module.vpc.private_subnets
+  cluster_name       = "${var.project_name}-eks"
+  vpc_id             = module.vpc.vpc_id
+  private_subnets    = module.vpc.private_subnets
+  node_instance_type = "t2.medium"
+  desired_size       = 2
+  node_disk_size     = 20
 
   depends_on = [
     module.vpc
   ]
 }
+
 
 ############################################
 # ALB Controller

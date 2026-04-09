@@ -1,3 +1,7 @@
+############################################
+# EKS CLUSTER IAM ROLE
+############################################
+
 resource "aws_iam_role" "eks_cluster_role" {
   name = "${var.cluster_name}-cluster-role"
 
@@ -13,16 +17,24 @@ resource "aws_iam_role" "eks_cluster_role" {
       }
     ]
   })
+
+  tags = {
+    Name = "${var.cluster_name}-cluster-role"
+  }
 }
 
-# Attach Required AWS Policy
+############################################
+# ATTACH REQUIRED POLICY TO EKS CLUSTER ROLE
+############################################
 
 resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
   role       = aws_iam_role.eks_cluster_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
 
-# Create the EKS Cluster
+############################################
+# CREATE EKS CLUSTER
+############################################
 
 resource "aws_eks_cluster" "cluster" {
   name     = var.cluster_name
@@ -35,11 +47,15 @@ resource "aws_eks_cluster" "cluster" {
   depends_on = [
     aws_iam_role_policy_attachment.eks_cluster_policy
   ]
+
+  tags = {
+    Name = var.cluster_name
+  }
 }
 
-# Important: subnet_ids = var.private_subnets
-
-# Node IAM Role
+############################################
+# NODE IAM ROLE
+############################################
 
 resource "aws_iam_role" "node_role" {
   name = "${var.cluster_name}-node-role"
@@ -56,9 +72,15 @@ resource "aws_iam_role" "node_role" {
       }
     ]
   })
+
+  tags = {
+    Name = "${var.cluster_name}-node-role"
+  }
 }
 
-# Attach Node Policies
+############################################
+# ATTACH REQUIRED POLICIES TO NODE ROLE
+############################################
 
 resource "aws_iam_role_policy_attachment" "node_worker_policy" {
   role       = aws_iam_role.node_role.name
@@ -75,7 +97,56 @@ resource "aws_iam_role_policy_attachment" "node_ecr_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
-# Create Managed Node Group
+############################################
+# EKS WORKER NODE AMI
+############################################
+
+data "aws_ami" "eks_worker" {
+  most_recent = true
+  owners      = ["602401143452"] # Amazon EKS AMI account
+
+  filter {
+    name   = "name"
+    values = ["amazon-eks-node-*"]
+  }
+}
+
+############################################
+# LAUNCH TEMPLATE FOR NODE GROUP
+# (controls disk size, volume type, instance config)
+############################################
+
+resource "aws_launch_template" "eks_nodes" {
+  name_prefix   = "${var.cluster_name}-node-template-"
+  image_id      = data.aws_ami.eks_worker.id
+  instance_type = var.node_instance_type
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+
+    ebs {
+      volume_size           = var.node_disk_size
+      volume_type           = "gp3"
+      delete_on_termination = true
+    }
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+
+    tags = {
+      Name = "${var.cluster_name}-node"
+    }
+  }
+
+  tags = {
+    Name = "${var.cluster_name}-launch-template"
+  }
+}
+
+############################################
+# CREATE MANAGED NODE GROUP
+############################################
 
 resource "aws_eks_node_group" "nodes" {
   cluster_name    = aws_eks_cluster.cluster.name
@@ -89,24 +160,44 @@ resource "aws_eks_node_group" "nodes" {
     min_size     = 2
   }
 
-  instance_types = [var.node_instance_type]
+  launch_template {
+    id      = aws_launch_template.eks_nodes.id
+    version = "$Latest"
+  }
 
   depends_on = [
     aws_iam_role_policy_attachment.node_worker_policy,
     aws_iam_role_policy_attachment.node_cni_policy,
     aws_iam_role_policy_attachment.node_ecr_policy
   ]
+
+  tags = {
+    Name = "${var.cluster_name}-node-group"
+  }
 }
+
+############################################
+# FETCH EKS CLUSTER DETAILS
+############################################
 
 data "aws_eks_cluster" "cluster" {
   name = aws_eks_cluster.cluster.name
+
+  depends_on = [
+    aws_eks_cluster.cluster
+  ]
 }
 
+############################################
+# OIDC PROVIDER FOR IRSA
+############################################
+
 resource "aws_iam_openid_connect_provider" "oidc" {
-
-  client_id_list = ["sts.amazonaws.com"]
-
+  client_id_list  = ["sts.amazonaws.com"]
   thumbprint_list = ["9e99a48a9960b14926bb7f3b02e22da0ecd4e3e4"]
+  url             = data.aws_eks_cluster.cluster.identity[0].oidc[0].issuer
 
-  url = data.aws_eks_cluster.cluster.identity[0].oidc[0].issuer
+  tags = {
+    Name = "${var.cluster_name}-oidc"
+  }
 }
