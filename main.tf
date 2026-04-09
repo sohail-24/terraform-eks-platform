@@ -78,7 +78,7 @@ module "django_media_s3" {
 
   source = "./modules/s3"
 
-  bucket_name = "sohail-django-media-bucket"
+  bucket_name = "sohail-django-media-2026-001"
 }
 
 ############################################
@@ -90,7 +90,7 @@ module "iam" {
   source = "./modules/iam"
 
   cluster_name = module.eks.cluster_name
-  bucket_name  = "sohail-django-media-bucket"
+  bucket_name  = "sohail-django-media-2026-001"
 
   depends_on = [
     module.eks
@@ -98,36 +98,38 @@ module "iam" {
 }
 
 ############################################
-# EBS CSI
+# EBS CSI (TEMPORARILY DISABLED)
 ############################################
 
-module "ebs_csi" {
-  source = "./platform/ebs-csi"
+#module "ebs_csi" {
+#  source = "./platform/ebs-csi"
 
-  oidc_provider_arn = module.eks.oidc_provider_arn
-}
+#  oidc_provider_arn = module.eks.oidc_provider_arn
+#}
 
 ############################################
-# 🔥 CLEANUP BEFORE DESTROY (VERY IMPORTANT)
+# 🔥 CLEANUP BEFORE DESTROY (VERY IMPORTANT) (DISABLED - HANDLED BY destroy.yml)
 ############################################
 
-resource "null_resource" "cleanup_k8s" {
+#resource "null_resource" "cleanup_k8s" {
 
-  provisioner "local-exec" {
-    when = destroy
-    command = <<EOT
-echo "🔥 Deleting ArgoCD App..."
-kubectl delete application django-ecommerce -n argocd --ignore-not-found=true
+#  provisioner "local-exec" {
+#    when = destroy
+#    command = <<EOT
+#echo "🔥 Deleting ArgoCD App..."
+#kubectl delete application django-ecommerce -n argocd --ignore-not-found=true
 
-echo "🔥 Deleting ecommerce namespace..."
-kubectl delete namespace ecommerce --ignore-not-found=true
+#echo "🔥 Deleting ecommerce namespace..."
+#kubectl delete namespace ecommerce --ignore-not-found=true
 
-echo "⏳ Waiting for AWS Load Balancer cleanup..."
-sleep 120
-EOT
-  }
+#echo "⏳ Waiting for AWS Load Balancer cleanup..."
+#sleep 120
+#EOT
+#  }
 
-  depends_on = [
-    module.argocd
-  ]
-}
+#  depends_on = [
+#    module.argocd
+#  ]
+#}
+
+
