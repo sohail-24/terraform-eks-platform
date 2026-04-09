@@ -11,7 +11,7 @@ jobs:
   destroy:
     name: Terraform Destroy + EKS Cleanup
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     env:
       AWS_REGION: ap-south-1
@@ -71,7 +71,7 @@ jobs:
             --name $CLUSTER_NAME
 
       ############################################
-      # PRE-DESTROY DEBUG
+      # PRE-DESTROY DEBUG SNAPSHOT
       ############################################
       - name: Pre-Destroy Debug Snapshot
         continue-on-error: true
@@ -90,6 +90,12 @@ jobs:
 
           echo "===== ALL PODS ====="
           kubectl get pods -A || true
+
+          echo "===== AUTO SCALING GROUPS ====="
+          aws autoscaling describe-auto-scaling-groups --region $AWS_REGION || true
+
+          echo "===== LAUNCH TEMPLATES ====="
+          aws ec2 describe-launch-templates --region $AWS_REGION || true
 
       ############################################
       # CLEAN ARGOCD APP / NAMESPACE (best effort)
@@ -110,10 +116,10 @@ jobs:
         continue-on-error: true
         run: |
           echo "⏳ Waiting for namespace cleanup..."
-          sleep 60
+          sleep 90
 
       ############################################
-      # FORCE DELETE NODEGROUP FIRST (VERY IMPORTANT)
+      # DELETE NODEGROUP FIRST (VERY IMPORTANT)
       ############################################
       - name: Delete EKS Node Group First
         continue-on-error: true
@@ -134,18 +140,101 @@ jobs:
             --nodegroup-name $NODEGROUP_NAME || true
 
       ############################################
+      # CLEAN LEFTOVER AUTO SCALING GROUPS
+      ############################################
+      - name: Cleanup Leftover Auto Scaling Groups
+        continue-on-error: true
+        run: |
+          echo "🧹 Looking for leftover EKS Auto Scaling Groups..."
+
+          ASG_NAMES=$(aws autoscaling describe-auto-scaling-groups \
+            --region $AWS_REGION \
+            --query "AutoScalingGroups[?contains(AutoScalingGroupName, '$CLUSTER_NAME')].AutoScalingGroupName" \
+            --output text)
+
+          for ASG in $ASG_NAMES; do
+            echo "⚠️ Found ASG: $ASG"
+            echo "🔻 Scaling down $ASG to 0..."
+            aws autoscaling update-auto-scaling-group \
+              --region $AWS_REGION \
+              --auto-scaling-group-name "$ASG" \
+              --min-size 0 \
+              --max-size 0 \
+              --desired-capacity 0 || true
+
+            echo "🗑️ Deleting ASG: $ASG"
+            aws autoscaling delete-auto-scaling-group \
+              --region $AWS_REGION \
+              --auto-scaling-group-name "$ASG" \
+              --force-delete || true
+          done
+
+      ############################################
+      # WAIT FOR EC2 TERMINATION
+      ############################################
+      - name: Wait for EC2 Cleanup
+        continue-on-error: true
+        run: |
+          echo "⏳ Waiting for leftover EC2 instances to terminate..."
+          sleep 120
+
+      ############################################
+      # CLEAN LEFTOVER LAUNCH TEMPLATES
+      ############################################
+      - name: Cleanup Leftover Launch Templates
+        continue-on-error: true
+        run: |
+          echo "🧹 Looking for leftover EKS launch templates..."
+
+          LT_IDS=$(aws ec2 describe-launch-templates \
+            --region $AWS_REGION \
+            --query "LaunchTemplates[?contains(LaunchTemplateName, '$CLUSTER_NAME')].LaunchTemplateId" \
+            --output text)
+
+          for LT in $LT_IDS; do
+            echo "🗑️ Deleting Launch Template: $LT"
+            aws ec2 delete-launch-template \
+              --region $AWS_REGION \
+              --launch-template-id "$LT" || true
+          done
+
+      ############################################
       # EXTRA AWS CLEANUP BUFFER
       ############################################
       - name: Wait for AWS Cleanup Stabilization
         run: |
           echo "⏳ Waiting for AWS cleanup stabilization..."
-          sleep 90
+          sleep 120
 
       ############################################
       # TERRAFORM DESTROY
       ############################################
       - name: Terraform Destroy
         run: terraform destroy -auto-approve
+
+      ############################################
+      # CLEAN OIDC PROVIDER (best effort)
+      ############################################
+      - name: Cleanup Leftover OIDC Provider
+        if: always()
+        continue-on-error: true
+        run: |
+          echo "🧹 Checking leftover OIDC providers..."
+
+          OIDC_ARNS=$(aws iam list-open-id-connect-providers \
+            --query "OpenIDConnectProviderList[].Arn" \
+            --output text)
+
+          for ARN in $OIDC_ARNS; do
+            URL=$(aws iam get-open-id-connect-provider \
+              --open-id-connect-provider-arn "$ARN" \
+              --query "Url" \
+              --output text 2>/dev/null || true)
+
+            if echo "$URL" | grep -q "oidc.eks.$AWS_REGION.amazonaws.com"; then
+              echo "⚠️ Found possible leftover OIDC: $ARN ($URL)"
+            fi
+          done
 
       ############################################
       # POST-DESTROY VERIFY
@@ -166,7 +255,13 @@ jobs:
           echo "===== LEFTOVER LOAD BALANCERS ====="
           aws elbv2 describe-load-balancers --region $AWS_REGION || true
 
+          echo "===== LEFTOVER AUTO SCALING GROUPS ====="
+          aws autoscaling describe-auto-scaling-groups --region $AWS_REGION || true
+
           echo "===== LEFTOVER EC2 INSTANCES ====="
           aws ec2 describe-instances \
             --region $AWS_REGION \
             --filters "Name=instance-state-name,Values=running,pending,stopping,stopped" || true
+
+          echo "===== LEFTOVER LAUNCH TEMPLATES ====="
+          aws ec2 describe-launch-templates --region $AWS_REGION || true
