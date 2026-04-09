@@ -27,7 +27,7 @@ module "eks" {
   vpc_id             = module.vpc.vpc_id
   private_subnets    = module.vpc.private_subnets
   node_instance_type = "t2.medium"
-  desired_size       = 2
+  desired_size       = 4
   node_disk_size     = 20
 
   depends_on = [

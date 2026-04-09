@@ -22,7 +22,7 @@ variable "node_instance_type" {
 variable "desired_size" {
   description = "Desired number of worker nodes"
   type        = number
-  default     = 2
+  default     = 4
 }
 
 variable "node_disk_size" {
