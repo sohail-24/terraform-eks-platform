@@ -118,12 +118,18 @@ resource "aws_eks_node_group" "nodes" {
 
   instance_types = [var.node_instance_type]
   disk_size      = var.node_disk_size
-  ami_type       = "AL2_x86_64"
+
+  # ✅ FIXED: use modern AMI for newer EKS versions
+  ami_type = "AL2023_x86_64_STANDARD"
 
   scaling_config {
     desired_size = var.desired_size
     max_size     = 6
     min_size     = 2
+  }
+
+  update_config {
+    max_unavailable = 1
   }
 
   depends_on = [
