@@ -219,50 +219,59 @@ jobs:
           kubectl get pods -A
 
       ############################################
-      # INSTALL ARGOCD
       ############################################
-      - name: Cleanup Old ArgoCD CRDs
+      # FULL ARGOCD RESET (IDEMPOTENT)
+      ############################################
+      - name: Full ArgoCD Cleanup (Safe Reset)
         run: |
-          kubectl delete crd applicationsets.argoproj.io --ignore-not-found=true
-          kubectl delete crd applications.argoproj.io --ignore-not-found=true
+          echo "🔥 Cleaning previous ArgoCD installation..."
 
-      - name: Install ArgoCD (SAFE)
+          kubectl delete namespace argocd --ignore-not-found=true
+
+          kubectl wait --for=delete namespace/argocd --timeout=120s || true
+          
+          kubectl delete crd applications.argoproj.io --ignore-not-found=true
+          kubectl delete crd applicationsets.argoproj.io --ignore-not-found=true
+          kubectl delete crd appprojects.argoproj.io --ignore-not-found=true
+
+          echo "⏳ Waiting for cleanup..."
+          sleep 30
+
+      ############################################
+      # INSTALL ARGOCD (CLEAN INSTALL)
+      ############################################
+      - name: Install ArgoCD (Fresh)
         run: |
-          kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+          echo "🚀 Installing ArgoCD cleanly..."
+
+          kubectl create namespace argocd
 
           kubectl create -n argocd \
-            -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml || true
+            -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
       ############################################
-      # WAIT FOR ARGOCD CORE COMPONENTS
+      # WAIT FOR ALL ARGOCD COMPONENTS (ROBUST)
       ############################################
-      - name: Wait for ArgoCD Server
+      - name: Wait for ArgoCD Pods Ready
         run: |
-          echo "⏳ Waiting for ArgoCD server..."
-          kubectl rollout status deployment/argocd-server -n argocd --timeout=900s
+          echo "⏳ Waiting for ALL ArgoCD components..."
 
-      - name: Wait for ArgoCD Repo Server
-        run: |
-          echo "⏳ Waiting for ArgoCD repo server..."
-          kubectl rollout status deployment/argocd-repo-server -n argocd --timeout=900s
-
-      - name: Wait for ArgoCD Redis
-        run: |
-          echo "⏳ Waiting for ArgoCD redis..."
-          kubectl rollout status deployment/argocd-redis -n argocd --timeout=900s || true
-
-      - name: Wait for ArgoCD Application Controller
-        run: |
-          echo "⏳ Waiting for ArgoCD application controller..."
-          kubectl rollout status statefulset/argocd-application-controller -n argocd --timeout=900s || true
+          kubectl wait --for=condition=Ready pods \
+            -l app.kubernetes.io/part-of=argocd \
+            -n argocd \
+            --timeout=900s
 
       ############################################
-      # SMALL BUFFER BEFORE APP APPLY
+      # DEBUG (VERY IMPORTANT)
       ############################################
-      - name: Wait Before Applying ArgoCD App
+      - name: ArgoCD Debug Snapshot
+        if: always()
         run: |
-          echo "⏳ Giving ArgoCD a small stabilization window..."
-          sleep 45
+          echo "===== ARGOCD PODS ====="
+          kubectl get pods -n argocd -o wide || true
+
+          echo "===== ARGOCD EVENTS ====="
+          kubectl get events -n argocd --sort-by=.metadata.creationTimestamp || true
 
       ############################################
       # DEPLOY GITOPS APP
@@ -270,7 +279,7 @@ jobs:
       - name: Apply ArgoCD App
         run: |
           kubectl apply -f argocd/app.yaml
-
+          
       ############################################
       # FINAL STATUS
       ############################################
