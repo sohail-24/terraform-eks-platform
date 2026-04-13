@@ -220,55 +220,17 @@ jobs:
 
       ############################################
       ############################################
-      # CLEAN OLD ARGOCD (SAFE)
+      # WAIT FOR ARGOCD (INSTALLED BY TERRAFORM)
       ############################################
-      - name: Cleanup ArgoCD Namespace
+      - name: Wait for ArgoCD to be Ready
         run: |
-          echo "🔥 Cleaning ArgoCD namespace..."
-
-          kubectl delete namespace argocd --ignore-not-found=true
-          kubectl wait --for=delete namespace/argocd --timeout=120s || true
-
-
-      ############################################
-      # INSTALL ARGOCD USING HELM (BEST PRACTICE)
-      ############################################
-      - name: Install ArgoCD via Helm
-        run: |
-          echo "🚀 Installing ArgoCD using Helm..."
-
-          helm repo add argo https://argoproj.github.io/argo-helm
-          helm repo update
-
-          helm upgrade --install argocd argo/argo-cd \
-            --namespace argocd \
-            --create-namespace \
-            --wait \
-            --timeout 10m
-
-      ############################################
-      # VERIFY ARGOCD
-      ############################################
-      - name: Wait for ArgoCD Pods Ready
-        run: |
-          echo "⏳ Verifying ArgoCD..."
+          echo "⏳ Waiting for ArgoCD (installed by Terraform)..."
 
           kubectl wait --for=condition=Ready pods \
             -l app.kubernetes.io/part-of=argocd \
             -n argocd \
             --timeout=900s
-      ############################################
-      # DEBUG (VERY IMPORTANT)
-      ############################################
-      - name: ArgoCD Debug Snapshot
-        if: always()
-        run: |
-          echo "===== ARGOCD PODS ====="
-          kubectl get pods -n argocd -o wide || true
-
-          echo "===== ARGOCD EVENTS ====="
-          kubectl get events -n argocd --sort-by=.metadata.creationTimestamp || true
-
+     
       ############################################
       # DEPLOY GITOPS APP
       ############################################
