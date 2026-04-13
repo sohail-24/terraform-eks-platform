@@ -220,47 +220,43 @@ jobs:
 
       ############################################
       ############################################
-      # FULL ARGOCD RESET (IDEMPOTENT)
+      # CLEAN OLD ARGOCD (SAFE)
       ############################################
-      - name: Full ArgoCD Cleanup (Safe Reset)
+      - name: Cleanup ArgoCD Namespace
         run: |
-          echo "🔥 Cleaning previous ArgoCD installation..."
+          echo "🔥 Cleaning ArgoCD namespace..."
 
           kubectl delete namespace argocd --ignore-not-found=true
-
           kubectl wait --for=delete namespace/argocd --timeout=120s || true
-          
-          kubectl delete crd applications.argoproj.io --ignore-not-found=true
-          kubectl delete crd applicationsets.argoproj.io --ignore-not-found=true
-          kubectl delete crd appprojects.argoproj.io --ignore-not-found=true
 
-          echo "⏳ Waiting for cleanup..."
-          sleep 30
 
       ############################################
-      # INSTALL ARGOCD (CLEAN INSTALL)
+      # INSTALL ARGOCD USING HELM (BEST PRACTICE)
       ############################################
-      - name: Install ArgoCD (Fresh)
+      - name: Install ArgoCD via Helm
         run: |
-          echo "🚀 Installing ArgoCD cleanly..."
+          echo "🚀 Installing ArgoCD using Helm..."
 
-          kubectl create namespace argocd
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo update
 
-          kubectl create -n argocd \
-            -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+          helm upgrade --install argocd argo/argo-cd \
+            --namespace argocd \
+            --create-namespace \
+            --wait \
+            --timeout 10m
 
       ############################################
-      # WAIT FOR ALL ARGOCD COMPONENTS (ROBUST)
+      # VERIFY ARGOCD
       ############################################
       - name: Wait for ArgoCD Pods Ready
         run: |
-          echo "⏳ Waiting for ALL ArgoCD components..."
+          echo "⏳ Verifying ArgoCD..."
 
           kubectl wait --for=condition=Ready pods \
             -l app.kubernetes.io/part-of=argocd \
             -n argocd \
             --timeout=900s
-
       ############################################
       # DEBUG (VERY IMPORTANT)
       ############################################
