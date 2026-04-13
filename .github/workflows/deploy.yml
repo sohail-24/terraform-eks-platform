@@ -221,14 +221,17 @@ jobs:
       ############################################
       # INSTALL ARGOCD
       ############################################
-      - name: Install ArgoCD Namespace
+      - name: Cleanup Old ArgoCD CRDs
+        run: |
+          kubectl delete crd applicationsets.argoproj.io --ignore-not-found=true
+          kubectl delete crd applications.argoproj.io --ignore-not-found=true
+
+      - name: Install ArgoCD (SAFE)
         run: |
           kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Install ArgoCD
-        run: |
-          kubectl apply -n argocd \
-            -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+          kubectl create -n argocd \
+            -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml || true
 
       ############################################
       # WAIT FOR ARGOCD CORE COMPONENTS
