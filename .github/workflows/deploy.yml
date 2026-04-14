@@ -40,9 +40,10 @@ jobs:
       run: aws eks update-kubeconfig --name $CLUSTER_NAME
 
     - name: Wait Nodegroup
-      run: aws eks wait nodegroup-active \
-        --cluster-name $CLUSTER_NAME \
-        --nodegroup-name $NODEGROUP_NAME
+      run: |
+        aws eks wait nodegroup-active \
+          --cluster-name $CLUSTER_NAME \
+          --nodegroup-name $NODEGROUP_NAME
 
     - name: Wait Nodes
       run: kubectl wait --for=condition=Ready nodes --all --timeout=600s
