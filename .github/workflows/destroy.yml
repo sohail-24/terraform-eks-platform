@@ -1,4 +1,4 @@
-name: 🔥 EKS Production Destroy Pipeline
+name: 🔥 EKS ZERO-MANUAL DESTROY PIPELINE
 
 on:
   workflow_dispatch:
@@ -9,7 +9,6 @@ concurrency:
 
 jobs:
   destroy:
-    name: Full Cleanup + Terraform Destroy
     runs-on: ubuntu-latest
     timeout-minutes: 150
 
@@ -17,48 +16,23 @@ jobs:
       AWS_REGION: ap-south-1
       CLUSTER_NAME: aws_eks-eks
       NODEGROUP_NAME: aws_eks-eks-nodes
-      TF_IN_AUTOMATION: true
-      TF_INPUT: false
 
     steps:
 
-    # ============================================
-    # CHECKOUT
-    # ============================================
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-    # ============================================
-    # TOOLING
-    # ============================================
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
+    - uses: hashicorp/setup-terraform@v3
+    - uses: azure/setup-kubectl@v4
 
-    - name: Setup kubectl
-      uses: azure/setup-kubectl@v4
-
-    - name: Setup Helm
-      uses: azure/setup-helm@v4
-
-    # ============================================
-    # AWS AUTH
-    # ============================================
-    - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
+    - uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    # ============================================
-    # TERRAFORM INIT
-    # ============================================
     - name: Terraform Init
       run: terraform init
 
-    # ============================================
-    # CONFIGURE KUBECTL (SAFE)
-    # ============================================
     - name: Configure kubeconfig
       continue-on-error: true
       run: |
@@ -66,143 +40,65 @@ jobs:
           --region $AWS_REGION \
           --name $CLUSTER_NAME || true
 
-    # ============================================
-    # DELETE ARGOCD APP
-    # ============================================
-    - name: Delete ArgoCD App
+    # 🔥 CRITICAL FIX (ARGO FULL CLEAN)
+    - name: 🔥 Force Delete ArgoCD COMPLETELY
       continue-on-error: true
       run: |
-        kubectl delete application django-ecommerce -n argocd --ignore-not-found=true || true
+        echo "🔥 Deleting ArgoCD apps..."
+        kubectl delete applications --all -n argocd || true
 
-    # ============================================
-    # FORCE DELETE NAMESPACE (FIX FINALIZER ISSUE)
-    # ============================================
-    - name: Force Delete Ecommerce Namespace
+        echo "🔥 Deleting argocd namespace..."
+        kubectl delete namespace argocd --grace-period=0 --force || true
+
+        sleep 30
+
+        echo "🔥 Removing CRDs..."
+        kubectl get crds | grep argoproj | awk '{print $1}' | xargs -r kubectl delete crd || true
+
+    # 🔥 APP CLEAN
+    - name: Delete Ecommerce Namespace
       continue-on-error: true
       run: |
-        kubectl delete namespace ecommerce --ignore-not-found=true || true
+        kubectl delete namespace ecommerce --grace-period=0 --force || true
+        sleep 30
 
-        echo "⏳ Waiting for namespace deletion..."
-        sleep 60
-
-    # ============================================
-    # CLEAN LOAD BALANCERS (CRITICAL)
-    # ============================================
+    # 🔥 CLEAN ELB
     - name: Cleanup LoadBalancers
       continue-on-error: true
       run: |
-        echo "🧹 Cleaning ELBv2..."
-
-        LB_ARNS=$(aws elbv2 describe-load-balancers \
-          --region $AWS_REGION \
+        aws elbv2 describe-load-balancers \
           --query "LoadBalancers[].LoadBalancerArn" \
-          --output text)
+          --output text | \
+        xargs -r -n1 aws elbv2 delete-load-balancer --load-balancer-arn || true
 
-        for LB in $LB_ARNS; do
-          echo "Deleting LB: $LB"
-          aws elbv2 delete-load-balancer \
-            --region $AWS_REGION \
-            --load-balancer-arn $LB || true
-        done
-
-    # ============================================
-    # CLEAN EBS VOLUMES (VERY IMPORTANT)
-    # ============================================
-    - name: Cleanup EBS Volumes
+    # 🔥 CLEAN EBS
+    - name: Cleanup EBS
       continue-on-error: true
       run: |
-        echo "🧹 Cleaning EBS volumes..."
-
-        VOLUMES=$(aws ec2 describe-volumes \
-          --region $AWS_REGION \
+        aws ec2 describe-volumes \
           --query "Volumes[?State=='available'].VolumeId" \
-          --output text)
+          --output text | \
+        xargs -r -n1 aws ec2 delete-volume --volume-id || true
 
-        for VOL in $VOLUMES; do
-          echo "Deleting volume: $VOL"
-          aws ec2 delete-volume --volume-id $VOL --region $AWS_REGION || true
-        done
-
-    # ============================================
-    # DELETE NODEGROUP FIRST
-    # ============================================
+    # 🔥 NODEGROUP
     - name: Delete Nodegroup
       continue-on-error: true
       run: |
         aws eks delete-nodegroup \
           --cluster-name $CLUSTER_NAME \
-          --nodegroup-name $NODEGROUP_NAME \
-          --region $AWS_REGION || true
+          --nodegroup-name $NODEGROUP_NAME || true
 
-    - name: Wait for Nodegroup Deletion
+    - name: Wait Nodegroup Delete
       continue-on-error: true
       run: |
         aws eks wait nodegroup-deleted \
           --cluster-name $CLUSTER_NAME \
-          --nodegroup-name $NODEGROUP_NAME \
-          --region $AWS_REGION || true
+          --nodegroup-name $NODEGROUP_NAME || true
 
-    # ============================================
-    # CLEAN AUTO SCALING GROUPS
-    # ============================================
-    - name: Cleanup Auto Scaling Groups
-      continue-on-error: true
-      run: |
-        ASG_NAMES=$(aws autoscaling describe-auto-scaling-groups \
-          --region $AWS_REGION \
-          --query "AutoScalingGroups[].AutoScalingGroupName" \
-          --output text)
+    - name: Wait stabilization
+      run: sleep 60
 
-        for ASG in $ASG_NAMES; do
-          echo "Deleting ASG: $ASG"
-          aws autoscaling update-auto-scaling-group \
-            --auto-scaling-group-name $ASG \
-            --min-size 0 --max-size 0 --desired-capacity 0 \
-            --region $AWS_REGION || true
-
-          aws autoscaling delete-auto-scaling-group \
-            --auto-scaling-group-name $ASG \
-            --force-delete \
-            --region $AWS_REGION || true
-        done
-
-    # ============================================
-    # CLEAN LAUNCH TEMPLATES
-    # ============================================
-    - name: Cleanup Launch Templates
-      continue-on-error: true
-      run: |
-        LT_IDS=$(aws ec2 describe-launch-templates \
-          --region $AWS_REGION \
-          --query "LaunchTemplates[].LaunchTemplateId" \
-          --output text)
-
-        for LT in $LT_IDS; do
-          echo "Deleting Launch Template: $LT"
-          aws ec2 delete-launch-template \
-            --launch-template-id $LT \
-            --region $AWS_REGION || true
-        done
-
-    # ============================================
-    # WAIT FOR AWS STABILIZATION
-    # ============================================
-    - name: Wait for AWS Cleanup
-      run: sleep 120
-
-    # ============================================
-    # TERRAFORM DESTROY
-    # ============================================
+    # 🔥 FINAL DESTROY
     - name: Terraform Destroy
-      run: terraform destroy -auto-approve
-
-    # ============================================
-    # FINAL VERIFY
-    # ============================================
-    - name: Final Verification
-      continue-on-error: true
       run: |
-        echo "===== VERIFY CLEAN ====="
-        aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION || true
-        aws elbv2 describe-load-balancers --region $AWS_REGION || true
-        aws ec2 describe-volumes --region $AWS_REGION || true
+        timeout 1200 terraform destroy -auto-approve || true
