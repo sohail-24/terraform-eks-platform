@@ -1,16 +1,10 @@
-name: EKS Deploy Pipeline
+name: 🚀 EKS Production Deploy Pipeline
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
-    paths:
-      - '**.tf'
-      - 'modules/**'
-      - 'platform/**'
-      - 'argocd/**'
-      - '.github/workflows/deploy.yml'
 
 concurrency:
   group: eks-deploy-main
@@ -18,254 +12,151 @@ concurrency:
 
 jobs:
   deploy:
-    name: Terraform Apply + EKS Bootstrap
+    name: Full Infra + GitOps Deploy
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
 
     env:
       AWS_REGION: ap-south-1
-      TF_IN_AUTOMATION: true
-      TF_INPUT: false
       CLUSTER_NAME: aws_eks-eks
       NODEGROUP_NAME: aws_eks-eks-nodes
+      TF_IN_AUTOMATION: true
+      TF_INPUT: false
 
     steps:
-      ############################################
-      # CHECKOUT
-      ############################################
-      - name: Checkout Repository
-        uses: actions/checkout@v4
 
-      ############################################
-      # TOOLING
-      ############################################
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+    # ============================================
+    # CHECKOUT
+    # ============================================
+    - name: Checkout Repository
+      uses: actions/checkout@v4
 
-      - name: Setup kubectl
-        uses: azure/setup-kubectl@v4
-        with:
-          version: latest
+    # ============================================
+    # TOOLING
+    # ============================================
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
 
-      - name: Setup Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: latest
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v4
 
-      ############################################
-      # AWS AUTH
-      ############################################
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+    - name: Setup Helm
+      uses: azure/setup-helm@v4
 
-      ############################################
-      # PRE-FLIGHT AWS SNAPSHOT
-      ############################################
-      - name: Pre-Deploy AWS Snapshot
-        continue-on-error: true
-        run: |
-          echo "===== EXISTING EKS CLUSTER ====="
-          aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION || true
+    # ============================================
+    # AWS AUTH
+    # ============================================
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
 
-          echo "===== EXISTING NODEGROUP ====="
-          aws eks describe-nodegroup \
-            --cluster-name $CLUSTER_NAME \
-            --nodegroup-name $NODEGROUP_NAME \
-            --region $AWS_REGION || true
+    # ============================================
+    # TERRAFORM
+    # ============================================
+    - name: Terraform Init
+      run: terraform init
 
-          echo "===== AUTO SCALING GROUPS ====="
-          aws autoscaling describe-auto-scaling-groups --region $AWS_REGION || true
+    - name: Terraform Apply
+      run: terraform apply -auto-approve
 
-          echo "===== EC2 INSTANCES ====="
-          aws ec2 describe-instances \
-            --region $AWS_REGION \
-            --filters "Name=instance-state-name,Values=pending,running,stopping,stopped" || true
+    # ============================================
+    # WAIT FOR EKS
+    # ============================================
+    - name: Wait for Cluster ACTIVE
+      run: |
+        aws eks wait cluster-active \
+          --name $CLUSTER_NAME \
+          --region $AWS_REGION
 
-      ############################################
-      # TERRAFORM
-      ############################################
-      - name: Terraform Format Check
-        run: terraform fmt -check -recursive
+    - name: Configure kubeconfig
+      run: |
+        aws eks update-kubeconfig \
+          --name $CLUSTER_NAME \
+          --region $AWS_REGION
 
-      - name: Terraform Init
-        run: terraform init
+    - name: Wait for Nodegroup ACTIVE
+      run: |
+        aws eks wait nodegroup-active \
+          --cluster-name $CLUSTER_NAME \
+          --nodegroup-name $NODEGROUP_NAME \
+          --region $AWS_REGION
 
-      - name: Terraform Validate
-        run: terraform validate
+    # ============================================
+    # WAIT FOR NODES
+    # ============================================
+    - name: Wait for Nodes Ready
+      run: |
+        kubectl wait --for=condition=Ready nodes --all --timeout=600s
 
-      - name: Terraform Plan
-        run: terraform plan -out=tfplan
+    # ============================================
+    # WAIT FOR EBS CSI DRIVER (CRITICAL)
+    # ============================================
+    - name: Wait for EBS CSI Driver
+      run: |
+        echo "⏳ Waiting for EBS CSI Driver..."
+        kubectl wait --for=condition=Ready pods \
+          -l app.kubernetes.io/name=aws-ebs-csi-driver \
+          -n kube-system \
+          --timeout=600s
 
-      - name: Upload Terraform Plan Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: tfplan
-          path: tfplan
+    # ============================================
+    # WAIT FOR ARGOCD
+    # ============================================
+    - name: Wait for ArgoCD
+      run: |
+        kubectl wait --for=condition=Ready pods \
+          -l app.kubernetes.io/part-of=argocd \
+          -n argocd \
+          --timeout=600s
 
-      - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
+    # ============================================
+    # APPLY ARGOCD APP
+    # ============================================
+    - name: Apply ArgoCD Application
+      run: |
+        kubectl apply -f argocd/app.yaml
 
-      ############################################
-      # AWS STABILIZATION BUFFER
-      ############################################
-      - name: Wait for AWS Resource Stabilization
-        run: |
-          echo "⏳ Waiting for AWS resources to stabilize..."
-          sleep 60
+    # ============================================
+    # WAIT FOR APPLICATION PODS
+    # ============================================
+    - name: Wait for Ecommerce Pods
+      run: |
+        kubectl wait --for=condition=Ready pods \
+          -n ecommerce \
+          --all \
+          --timeout=900s
 
-      ############################################
-      # WAIT FOR EKS CONTROL PLANE
-      ############################################
-      - name: Wait for EKS Cluster to Become ACTIVE
-        run: |
-          echo "⏳ Waiting for EKS cluster to become ACTIVE..."
-          aws eks wait cluster-active \
-            --region $AWS_REGION \
-            --name $CLUSTER_NAME
-          echo "✅ EKS cluster is ACTIVE"
-
-      ############################################
-      # KUBECONFIG
-      ############################################
-      - name: Configure kubeconfig
-        run: |
-          echo "🔧 Configuring kubeconfig..."
-          aws eks update-kubeconfig \
-            --region $AWS_REGION \
-            --name $CLUSTER_NAME
-
-      ############################################
-      # WAIT FOR NODEGROUP
-      ############################################
-      - name: Wait for Node Group to Become ACTIVE
-        run: |
-          echo "⏳ Waiting for EKS node group to become ACTIVE..."
-          aws eks wait nodegroup-active \
-            --region $AWS_REGION \
-            --cluster-name $CLUSTER_NAME \
-            --nodegroup-name $NODEGROUP_NAME
-          echo "✅ Node group is ACTIVE"
-
-      ############################################
-      # EXTRA BUFFER FOR ASG / EC2 / NODE BOOTSTRAP
-      ############################################
-      - name: Wait for EC2 Worker Bootstrap
-        run: |
-          echo "⏳ Waiting for EC2 worker nodes to fully bootstrap..."
-          sleep 120
-
-      ############################################
-      # WAIT FOR K8S NODES TO APPEAR
-      ############################################
-      - name: Wait for Kubernetes Nodes to Join
-        run: |
-          echo "⏳ Waiting for Kubernetes nodes to join cluster..."
-          SUCCESS=false
-
-          for i in {1..30}; do
-            NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | wc -l || echo 0)
-            echo "Attempt $i: Found $NODE_COUNT node(s)"
-
-            if [ "$NODE_COUNT" -ge 1 ]; then
-              SUCCESS=true
-              break
-            fi
-
-            echo "Retrying in 20 seconds..."
-            sleep 20
-          done
-
-          if [ "$SUCCESS" != "true" ]; then
-            echo "❌ No Kubernetes nodes joined the cluster in time"
-            kubectl get nodes || true
-            exit 1
+    # ============================================
+    # WAIT FOR LOADBALANCER
+    # ============================================
+    - name: Wait for LoadBalancer
+      run: |
+        echo "⏳ Waiting for LoadBalancer IP..."
+        for i in {1..30}; do
+          LB=$(kubectl get svc django -n ecommerce -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          if [ ! -z "$LB" ]; then
+            echo "✅ LoadBalancer Ready: $LB"
+            exit 0
           fi
+          echo "Waiting... ($i)"
+          sleep 20
+        done
+        echo "❌ LoadBalancer not ready"
+        exit 1
 
-      ############################################
-      # WAIT FOR ALL NODES READY
-      ############################################
-      - name: Wait for All Nodes to Become Ready
-        run: |
-          echo "⏳ Waiting for all nodes to become Ready..."
-          kubectl wait --for=condition=Ready nodes --all --timeout=900s
-          echo "✅ All nodes are Ready"
+    # ============================================
+    # FINAL OUTPUT
+    # ============================================
+    - name: Final Status
+      run: |
+        echo "===== FINAL SERVICES ====="
+        kubectl get svc -n ecommerce
 
-      ############################################
-      # CLUSTER DEBUG SNAPSHOT
-      ############################################
-      - name: Cluster Debug Snapshot
-        run: |
-          echo "===== EKS CLUSTER ====="
-          aws eks describe-cluster \
-            --name $CLUSTER_NAME \
-            --region $AWS_REGION \
-            --query "cluster.status"
+        echo "===== FINAL PODS ====="
+        kubectl get pods -n ecommerce
 
-          echo "===== NODEGROUP ====="
-          aws eks describe-nodegroup \
-            --cluster-name $CLUSTER_NAME \
-            --nodegroup-name $NODEGROUP_NAME \
-            --region $AWS_REGION \
-            --query "nodegroup.status"
-
-          echo "===== KUBERNETES NODES ====="
-          kubectl get nodes -o wide
-
-          echo "===== SYSTEM PODS ====="
-          kubectl get pods -A
-
-      ############################################
-      ############################################
-      # WAIT FOR ARGOCD (INSTALLED BY TERRAFORM)
-      ############################################
-      - name: Wait for ArgoCD to be Ready
-        run: |
-          echo "⏳ Waiting for ArgoCD (installed by Terraform)..."
-
-          kubectl wait --for=condition=Ready pods \
-            -l app.kubernetes.io/part-of=argocd \
-            -n argocd \
-            --timeout=900s
-     
-      ############################################
-      # DEPLOY GITOPS APP
-      ############################################
-      - name: Apply ArgoCD App
-        run: |
-          kubectl apply -f argocd/app.yaml
-          
-      ############################################
-      # FINAL STATUS
-      ############################################
-      - name: Final Cluster Status
-        if: always()
-        run: |
-          echo "===== FINAL NODES ====="
-          kubectl get nodes -o wide || true
-
-          echo "===== FINAL PODS ====="
-          kubectl get pods -A || true
-
-          echo "===== ARGOCD PODS ====="
-          kubectl get pods -n argocd || true
-
-          echo "===== SERVICES ====="
-          kubectl get svc -A || true
-
-          echo "===== INGRESS ====="
-          kubectl get ingress -A || true
-
-          echo "===== NODEGROUP FINAL STATUS ====="
-          aws eks describe-nodegroup \
-            --cluster-name $CLUSTER_NAME \
-            --nodegroup-name $NODEGROUP_NAME \
-            --region $AWS_REGION || true
-
-          echo "===== EC2 FINAL ====="
-          aws ec2 describe-instances \
-            --region $AWS_REGION \
-            --filters "Name=instance-state-name,Values=pending,running,stopping,stopped" || true
+        echo "===== ACCESS URL ====="
+        kubectl get svc django -n ecommerce -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
