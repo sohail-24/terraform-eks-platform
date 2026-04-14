@@ -1,4 +1,4 @@
-name: EKS Destroy Pipeline
+name: 🔥 EKS Production Destroy Pipeline
 
 on:
   workflow_dispatch:
@@ -9,259 +9,200 @@ concurrency:
 
 jobs:
   destroy:
-    name: Terraform Destroy + EKS Cleanup
+    name: Full Cleanup + Terraform Destroy
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
 
     env:
       AWS_REGION: ap-south-1
-      TF_IN_AUTOMATION: true
-      TF_INPUT: false
       CLUSTER_NAME: aws_eks-eks
       NODEGROUP_NAME: aws_eks-eks-nodes
+      TF_IN_AUTOMATION: true
+      TF_INPUT: false
 
     steps:
-      ############################################
-      # CHECKOUT
-      ############################################
-      - name: Checkout Repository
-        uses: actions/checkout@v4
 
-      ############################################
-      # TOOLING
-      ############################################
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+    # ============================================
+    # CHECKOUT
+    # ============================================
+    - name: Checkout Repository
+      uses: actions/checkout@v4
 
-      - name: Setup kubectl
-        uses: azure/setup-kubectl@v4
-        with:
-          version: latest
+    # ============================================
+    # TOOLING
+    # ============================================
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
 
-      - name: Setup Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: latest
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v4
 
-      ############################################
-      # AWS AUTH
-      ############################################
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+    - name: Setup Helm
+      uses: azure/setup-helm@v4
 
-      ############################################
-      # TERRAFORM INIT
-      ############################################
-      - name: Terraform Init
-        run: terraform init
+    # ============================================
+    # AWS AUTH
+    # ============================================
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
 
-      ############################################
-      # CONFIGURE KUBECONFIG (best effort)
-      ############################################
-      - name: Configure kubeconfig
-        continue-on-error: true
-        run: |
-          echo "🔧 Trying to configure kubeconfig..."
-          aws eks update-kubeconfig \
+    # ============================================
+    # TERRAFORM INIT
+    # ============================================
+    - name: Terraform Init
+      run: terraform init
+
+    # ============================================
+    # CONFIGURE KUBECTL (SAFE)
+    # ============================================
+    - name: Configure kubeconfig
+      continue-on-error: true
+      run: |
+        aws eks update-kubeconfig \
+          --region $AWS_REGION \
+          --name $CLUSTER_NAME || true
+
+    # ============================================
+    # DELETE ARGOCD APP
+    # ============================================
+    - name: Delete ArgoCD App
+      continue-on-error: true
+      run: |
+        kubectl delete application django-ecommerce -n argocd --ignore-not-found=true || true
+
+    # ============================================
+    # FORCE DELETE NAMESPACE (FIX FINALIZER ISSUE)
+    # ============================================
+    - name: Force Delete Ecommerce Namespace
+      continue-on-error: true
+      run: |
+        kubectl delete namespace ecommerce --ignore-not-found=true || true
+
+        echo "⏳ Waiting for namespace deletion..."
+        sleep 60
+
+    # ============================================
+    # CLEAN LOAD BALANCERS (CRITICAL)
+    # ============================================
+    - name: Cleanup LoadBalancers
+      continue-on-error: true
+      run: |
+        echo "🧹 Cleaning ELBv2..."
+
+        LB_ARNS=$(aws elbv2 describe-load-balancers \
+          --region $AWS_REGION \
+          --query "LoadBalancers[].LoadBalancerArn" \
+          --output text)
+
+        for LB in $LB_ARNS; do
+          echo "Deleting LB: $LB"
+          aws elbv2 delete-load-balancer \
             --region $AWS_REGION \
-            --name $CLUSTER_NAME
+            --load-balancer-arn $LB || true
+        done
 
-      ############################################
-      # PRE-DESTROY DEBUG SNAPSHOT
-      ############################################
-      - name: Pre-Destroy Debug Snapshot
-        continue-on-error: true
-        run: |
-          echo "===== EKS CLUSTER ====="
-          aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION || true
+    # ============================================
+    # CLEAN EBS VOLUMES (VERY IMPORTANT)
+    # ============================================
+    - name: Cleanup EBS Volumes
+      continue-on-error: true
+      run: |
+        echo "🧹 Cleaning EBS volumes..."
 
-          echo "===== NODEGROUP ====="
-          aws eks describe-nodegroup \
-            --cluster-name $CLUSTER_NAME \
-            --nodegroup-name $NODEGROUP_NAME \
+        VOLUMES=$(aws ec2 describe-volumes \
+          --region $AWS_REGION \
+          --query "Volumes[?State=='available'].VolumeId" \
+          --output text)
+
+        for VOL in $VOLUMES; do
+          echo "Deleting volume: $VOL"
+          aws ec2 delete-volume --volume-id $VOL --region $AWS_REGION || true
+        done
+
+    # ============================================
+    # DELETE NODEGROUP FIRST
+    # ============================================
+    - name: Delete Nodegroup
+      continue-on-error: true
+      run: |
+        aws eks delete-nodegroup \
+          --cluster-name $CLUSTER_NAME \
+          --nodegroup-name $NODEGROUP_NAME \
+          --region $AWS_REGION || true
+
+    - name: Wait for Nodegroup Deletion
+      continue-on-error: true
+      run: |
+        aws eks wait nodegroup-deleted \
+          --cluster-name $CLUSTER_NAME \
+          --nodegroup-name $NODEGROUP_NAME \
+          --region $AWS_REGION || true
+
+    # ============================================
+    # CLEAN AUTO SCALING GROUPS
+    # ============================================
+    - name: Cleanup Auto Scaling Groups
+      continue-on-error: true
+      run: |
+        ASG_NAMES=$(aws autoscaling describe-auto-scaling-groups \
+          --region $AWS_REGION \
+          --query "AutoScalingGroups[].AutoScalingGroupName" \
+          --output text)
+
+        for ASG in $ASG_NAMES; do
+          echo "Deleting ASG: $ASG"
+          aws autoscaling update-auto-scaling-group \
+            --auto-scaling-group-name $ASG \
+            --min-size 0 --max-size 0 --desired-capacity 0 \
             --region $AWS_REGION || true
 
-          echo "===== K8S NODES ====="
-          kubectl get nodes -o wide || true
-
-          echo "===== ALL PODS ====="
-          kubectl get pods -A || true
-
-          echo "===== AUTO SCALING GROUPS ====="
-          aws autoscaling describe-auto-scaling-groups --region $AWS_REGION || true
-
-          echo "===== LAUNCH TEMPLATES ====="
-          aws ec2 describe-launch-templates --region $AWS_REGION || true
-
-      ############################################
-      # CLEAN ARGOCD APP / NAMESPACE (best effort)
-      ############################################
-      - name: Cleanup ArgoCD App
-        continue-on-error: true
-        run: |
-          echo "🧹 Cleaning ArgoCD application..."
-          kubectl delete application django-ecommerce -n argocd --ignore-not-found=true || true
-
-      - name: Cleanup Ecommerce Namespace
-        continue-on-error: true
-        run: |
-          echo "🧹 Cleaning ecommerce namespace..."
-          kubectl delete namespace ecommerce --ignore-not-found=true || true
-
-      - name: Wait for Namespace Cleanup
-        continue-on-error: true
-        run: |
-          echo "⏳ Waiting for namespace cleanup..."
-          sleep 90
-
-      ############################################
-      # DELETE NODEGROUP FIRST (VERY IMPORTANT)
-      ############################################
-      - name: Delete EKS Node Group First
-        continue-on-error: true
-        run: |
-          echo "🔥 Deleting node group first..."
-          aws eks delete-nodegroup \
-            --region $AWS_REGION \
-            --cluster-name $CLUSTER_NAME \
-            --nodegroup-name $NODEGROUP_NAME || true
-
-      - name: Wait for Node Group Deletion
-        continue-on-error: true
-        run: |
-          echo "⏳ Waiting for node group deletion..."
-          aws eks wait nodegroup-deleted \
-            --region $AWS_REGION \
-            --cluster-name $CLUSTER_NAME \
-            --nodegroup-name $NODEGROUP_NAME || true
-
-      ############################################
-      # CLEAN LEFTOVER AUTO SCALING GROUPS
-      ############################################
-      - name: Cleanup Leftover Auto Scaling Groups
-        continue-on-error: true
-        run: |
-          echo "🧹 Looking for leftover EKS Auto Scaling Groups..."
-
-          ASG_NAMES=$(aws autoscaling describe-auto-scaling-groups \
-            --region $AWS_REGION \
-            --query "AutoScalingGroups[?contains(AutoScalingGroupName, '$CLUSTER_NAME')].AutoScalingGroupName" \
-            --output text)
-
-          for ASG in $ASG_NAMES; do
-            echo "⚠️ Found ASG: $ASG"
-            echo "🔻 Scaling down $ASG to 0..."
-            aws autoscaling update-auto-scaling-group \
-              --region $AWS_REGION \
-              --auto-scaling-group-name "$ASG" \
-              --min-size 0 \
-              --max-size 0 \
-              --desired-capacity 0 || true
-
-            echo "🗑️ Deleting ASG: $ASG"
-            aws autoscaling delete-auto-scaling-group \
-              --region $AWS_REGION \
-              --auto-scaling-group-name "$ASG" \
-              --force-delete || true
-          done
-
-      ############################################
-      # WAIT FOR EC2 TERMINATION
-      ############################################
-      - name: Wait for EC2 Cleanup
-        continue-on-error: true
-        run: |
-          echo "⏳ Waiting for leftover EC2 instances to terminate..."
-          sleep 120
-
-      ############################################
-      # CLEAN LEFTOVER LAUNCH TEMPLATES
-      ############################################
-      - name: Cleanup Leftover Launch Templates
-        continue-on-error: true
-        run: |
-          echo "🧹 Looking for leftover EKS launch templates..."
-
-          LT_IDS=$(aws ec2 describe-launch-templates \
-            --region $AWS_REGION \
-            --query "LaunchTemplates[?contains(LaunchTemplateName, '$CLUSTER_NAME')].LaunchTemplateId" \
-            --output text)
-
-          for LT in $LT_IDS; do
-            echo "🗑️ Deleting Launch Template: $LT"
-            aws ec2 delete-launch-template \
-              --region $AWS_REGION \
-              --launch-template-id "$LT" || true
-          done
-
-      ############################################
-      # EXTRA AWS CLEANUP BUFFER
-      ############################################
-      - name: Wait for AWS Cleanup Stabilization
-        run: |
-          echo "⏳ Waiting for AWS cleanup stabilization..."
-          sleep 120
-
-      ############################################
-      # TERRAFORM DESTROY
-      ############################################
-      - name: Terraform Destroy
-        run: terraform destroy -auto-approve
-
-      ############################################
-      # CLEAN OIDC PROVIDER (best effort)
-      ############################################
-      - name: Cleanup Leftover OIDC Provider
-        if: always()
-        continue-on-error: true
-        run: |
-          echo "🧹 Checking leftover OIDC providers..."
-
-          OIDC_ARNS=$(aws iam list-open-id-connect-providers \
-            --query "OpenIDConnectProviderList[].Arn" \
-            --output text)
-
-          for ARN in $OIDC_ARNS; do
-            URL=$(aws iam get-open-id-connect-provider \
-              --open-id-connect-provider-arn "$ARN" \
-              --query "Url" \
-              --output text 2>/dev/null || true)
-
-            if echo "$URL" | grep -q "oidc.eks.$AWS_REGION.amazonaws.com"; then
-              echo "⚠️ Found possible leftover OIDC: $ARN ($URL)"
-            fi
-          done
-
-      ############################################
-      # POST-DESTROY VERIFY
-      ############################################
-      - name: Post-Destroy Verification
-        if: always()
-        continue-on-error: true
-        run: |
-          echo "===== VERIFY CLUSTER GONE ====="
-          aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION || true
-
-          echo "===== VERIFY NODEGROUP GONE ====="
-          aws eks describe-nodegroup \
-            --cluster-name $CLUSTER_NAME \
-            --nodegroup-name $NODEGROUP_NAME \
+          aws autoscaling delete-auto-scaling-group \
+            --auto-scaling-group-name $ASG \
+            --force-delete \
             --region $AWS_REGION || true
+        done
 
-          echo "===== LEFTOVER LOAD BALANCERS ====="
-          aws elbv2 describe-load-balancers --region $AWS_REGION || true
+    # ============================================
+    # CLEAN LAUNCH TEMPLATES
+    # ============================================
+    - name: Cleanup Launch Templates
+      continue-on-error: true
+      run: |
+        LT_IDS=$(aws ec2 describe-launch-templates \
+          --region $AWS_REGION \
+          --query "LaunchTemplates[].LaunchTemplateId" \
+          --output text)
 
-          echo "===== LEFTOVER AUTO SCALING GROUPS ====="
-          aws autoscaling describe-auto-scaling-groups --region $AWS_REGION || true
+        for LT in $LT_IDS; do
+          echo "Deleting Launch Template: $LT"
+          aws ec2 delete-launch-template \
+            --launch-template-id $LT \
+            --region $AWS_REGION || true
+        done
 
-          echo "===== LEFTOVER EC2 INSTANCES ====="
-          aws ec2 describe-instances \
-            --region $AWS_REGION \
-            --filters "Name=instance-state-name,Values=running,pending,stopping,stopped" || true
+    # ============================================
+    # WAIT FOR AWS STABILIZATION
+    # ============================================
+    - name: Wait for AWS Cleanup
+      run: sleep 120
 
-          echo "===== LEFTOVER LAUNCH TEMPLATES ====="
-          aws ec2 describe-launch-templates --region $AWS_REGION || true
+    # ============================================
+    # TERRAFORM DESTROY
+    # ============================================
+    - name: Terraform Destroy
+      run: terraform destroy -auto-approve
+
+    # ============================================
+    # FINAL VERIFY
+    # ============================================
+    - name: Final Verification
+      continue-on-error: true
+      run: |
+        echo "===== VERIFY CLEAN ====="
+        aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION || true
+        aws elbv2 describe-load-balancers --region $AWS_REGION || true
+        aws ec2 describe-volumes --region $AWS_REGION || true
