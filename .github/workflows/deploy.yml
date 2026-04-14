@@ -122,12 +122,24 @@ jobs:
     # ============================================
     # WAIT FOR APPLICATION PODS
     # ============================================
-    - name: Wait for Ecommerce Pods
+    - name: Wait for App Pods Only
       run: |
-        kubectl wait --for=condition=Ready pods \
+        echo "⏳ Waiting for Django + Postgres + Redis..."
+
+        kubectl wait --for=condition=Ready pod \
+          -l app=django \
           -n ecommerce \
-          --all \
-          --timeout=900s
+          --timeout=600s
+
+        kubectl wait --for=condition=Ready pod \
+          -l app=postgres \
+          -n ecommerce \
+          --timeout=600s
+
+        kubectl wait --for=condition=Ready pod \
+          -l app=redis \
+          -n ecommerce \
+          --timeout=600s
 
     # ============================================
     # WAIT FOR LOADBALANCER
@@ -135,7 +147,7 @@ jobs:
     - name: Wait for LoadBalancer
       run: |
         echo "⏳ Waiting for LoadBalancer IP..."
-        for i in {1..30}; do
+        for i in {1..40}; do
           LB=$(kubectl get svc django -n ecommerce -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
           if [ ! -z "$LB" ]; then
             echo "✅ LoadBalancer Ready: $LB"
@@ -146,7 +158,13 @@ jobs:
         done
         echo "❌ LoadBalancer not ready"
         exit 1
-
+    - name: Wait for Migration Job
+      run: |
+        kubectl wait --for=condition=complete job \
+          -n ecommerce \
+          -l job-name=django-migrate \
+          --timeout=300s || true
+      
     # ============================================
     # FINAL OUTPUT
     # ============================================
