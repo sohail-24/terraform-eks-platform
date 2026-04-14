@@ -64,11 +64,26 @@ jobs:
     - name: Apply Argo App
       run: kubectl apply -f argocd/app.yaml
 
-    - name: Wait App
+    # 🔥 NEW STEP (CRITICAL)
+    - name: Wait for ArgoCD Sync
       run: |
-        kubectl wait --for=condition=Ready pod -l app=django -n ecommerce --timeout=600s
-        kubectl wait --for=condition=Ready pod -l app=postgres -n ecommerce --timeout=600s
-        kubectl wait --for=condition=Ready pod -l app=redis -n ecommerce --timeout=600s
+        echo "⏳ Waiting for ArgoCD to sync app..."
+
+        for i in {1..40}; do
+          STATUS=$(kubectl get application django-ecommerce -n argocd -o jsonpath='{.status.sync.status}')
+
+          if [ "$STATUS" = "Synced" ]; then
+            echo "✅ ArgoCD Synced"
+            exit 0
+          fi
+
+          echo "Waiting... ($i)"
+          sleep 15
+        done
+
+        echo "❌ ArgoCD did not sync"
+        kubectl get application django-ecommerce -n argocd -o yaml
+        exit 1
 
     - name: Wait LB
       run: |
