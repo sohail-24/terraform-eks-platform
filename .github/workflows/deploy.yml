@@ -1,18 +1,12 @@
-name: 🚀 EKS Production Deploy Pipeline
+name: 🚀 EKS ZERO-MANUAL DEPLOY PIPELINE
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-
-concurrency:
-  group: eks-deploy-main
-  cancel-in-progress: false
+    branches: [ main ]
 
 jobs:
   deploy:
-    name: Full Infra + GitOps Deploy
     runs-on: ubuntu-latest
     timeout-minutes: 150
 
@@ -20,161 +14,66 @@ jobs:
       AWS_REGION: ap-south-1
       CLUSTER_NAME: aws_eks-eks
       NODEGROUP_NAME: aws_eks-eks-nodes
-      TF_IN_AUTOMATION: true
-      TF_INPUT: false
 
     steps:
 
-    # ============================================
-    # CHECKOUT
-    # ============================================
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+    - uses: hashicorp/setup-terraform@v3
+    - uses: azure/setup-kubectl@v4
 
-    # ============================================
-    # TOOLING
-    # ============================================
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
-
-    - name: Setup kubectl
-      uses: azure/setup-kubectl@v4
-
-    - name: Setup Helm
-      uses: azure/setup-helm@v4
-
-    # ============================================
-    # AWS AUTH
-    # ============================================
-    - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
+    - uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    # ============================================
-    # TERRAFORM
-    # ============================================
     - name: Terraform Init
       run: terraform init
 
     - name: Terraform Apply
       run: terraform apply -auto-approve
 
-    # ============================================
-    # WAIT FOR EKS
-    # ============================================
-    - name: Wait for Cluster ACTIVE
-      run: |
-        aws eks wait cluster-active \
-          --name $CLUSTER_NAME \
-          --region $AWS_REGION
+    - name: Wait Cluster
+      run: aws eks wait cluster-active --name $CLUSTER_NAME
 
     - name: Configure kubeconfig
-      run: |
-        aws eks update-kubeconfig \
-          --name $CLUSTER_NAME \
-          --region $AWS_REGION
+      run: aws eks update-kubeconfig --name $CLUSTER_NAME
 
-    - name: Wait for Nodegroup ACTIVE
-      run: |
-        aws eks wait nodegroup-active \
-          --cluster-name $CLUSTER_NAME \
-          --nodegroup-name $NODEGROUP_NAME \
-          --region $AWS_REGION
+    - name: Wait Nodegroup
+      run: aws eks wait nodegroup-active \
+        --cluster-name $CLUSTER_NAME \
+        --nodegroup-name $NODEGROUP_NAME
 
-    # ============================================
-    # WAIT FOR NODES
-    # ============================================
-    - name: Wait for Nodes Ready
-      run: |
-        kubectl wait --for=condition=Ready nodes --all --timeout=600s
+    - name: Wait Nodes
+      run: kubectl wait --for=condition=Ready nodes --all --timeout=600s
 
-    # ============================================
-    # WAIT FOR EBS CSI DRIVER (CRITICAL)
-    # ============================================
-    - name: Wait for EBS CSI Driver
+    - name: Wait CSI
       run: |
-        echo "⏳ Waiting for EBS CSI Driver..."
         kubectl wait --for=condition=Ready pods \
           -l app.kubernetes.io/name=aws-ebs-csi-driver \
-          -n kube-system \
-          --timeout=600s
+          -n kube-system --timeout=600s
 
-    # ============================================
-    # WAIT FOR ARGOCD
-    # ============================================
-    - name: Wait for ArgoCD
+    - name: Wait ArgoCD
       run: |
         kubectl wait --for=condition=Ready pods \
-          -l app.kubernetes.io/part-of=argocd \
           -n argocd \
+          -l app.kubernetes.io/part-of=argocd \
           --timeout=600s
 
-    # ============================================
-    # APPLY ARGOCD APP
-    # ============================================
-    - name: Apply ArgoCD Application
+    - name: Apply Argo App
+      run: kubectl apply -f argocd/app.yaml
+
+    - name: Wait App
       run: |
-        kubectl apply -f argocd/app.yaml
+        kubectl wait --for=condition=Ready pod -l app=django -n ecommerce --timeout=600s
+        kubectl wait --for=condition=Ready pod -l app=postgres -n ecommerce --timeout=600s
+        kubectl wait --for=condition=Ready pod -l app=redis -n ecommerce --timeout=600s
 
-    # ============================================
-    # WAIT FOR APPLICATION PODS
-    # ============================================
-    - name: Wait for App Pods Only
+    - name: Wait LB
       run: |
-        echo "⏳ Waiting for Django + Postgres + Redis..."
-
-        kubectl wait --for=condition=Ready pod \
-          -l app=django \
-          -n ecommerce \
-          --timeout=600s
-
-        kubectl wait --for=condition=Ready pod \
-          -l app=postgres \
-          -n ecommerce \
-          --timeout=600s
-
-        kubectl wait --for=condition=Ready pod \
-          -l app=redis \
-          -n ecommerce \
-          --timeout=600s
-
-    # ============================================
-    # WAIT FOR LOADBALANCER
-    # ============================================
-    - name: Wait for LoadBalancer
-      run: |
-        echo "⏳ Waiting for LoadBalancer IP..."
         for i in {1..40}; do
           LB=$(kubectl get svc django -n ecommerce -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-          if [ ! -z "$LB" ]; then
-            echo "✅ LoadBalancer Ready: $LB"
-            exit 0
-          fi
-          echo "Waiting... ($i)"
-          sleep 20
+          [ ! -z "$LB" ] && echo "🌍 $LB" && exit 0
+          sleep 15
         done
-        echo "❌ LoadBalancer not ready"
         exit 1
-    - name: Wait for Migration Job
-      run: |
-        kubectl wait --for=condition=complete job \
-          -n ecommerce \
-          -l job-name=django-migrate \
-          --timeout=300s || true
-      
-    # ============================================
-    # FINAL OUTPUT
-    # ============================================
-    - name: Final Status
-      run: |
-        echo "===== FINAL SERVICES ====="
-        kubectl get svc -n ecommerce
-
-        echo "===== FINAL PODS ====="
-        kubectl get pods -n ecommerce
-
-        echo "===== ACCESS URL ====="
-        kubectl get svc django -n ecommerce -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
