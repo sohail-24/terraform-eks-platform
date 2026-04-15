@@ -10,7 +10,7 @@ concurrency:
 jobs:
   destroy:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 120
 
     env:
       AWS_REGION: ap-south-1
@@ -20,7 +20,6 @@ jobs:
     steps:
 
     - uses: actions/checkout@v4
-
     - uses: hashicorp/setup-terraform@v3
     - uses: azure/setup-kubectl@v4
 
@@ -30,9 +29,15 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
+    # -------------------------------
+    # TERRAFORM INIT
+    # -------------------------------
     - name: Terraform Init
       run: terraform init
 
+    # -------------------------------
+    # CONNECT CLUSTER (OPTIONAL)
+    # -------------------------------
     - name: Configure kubeconfig
       continue-on-error: true
       run: |
@@ -40,47 +45,35 @@ jobs:
           --region $AWS_REGION \
           --name $CLUSTER_NAME || true
 
-    # 🔥 CRITICAL FIX (ARGO FULL CLEAN)
-    - name: 🔥 Force Delete ArgoCD COMPLETELY
+    # -------------------------------
+    # DELETE APPLICATION (ARGO)
+    # -------------------------------
+    - name: Delete ArgoCD Application
       continue-on-error: true
       run: |
-        echo "🔥 Deleting ArgoCD apps..."
-        kubectl delete applications --all -n argocd || true
+        kubectl delete application django-ecommerce -n argocd || true
 
-        echo "🔥 Deleting argocd namespace..."
-        kubectl delete namespace argocd --grace-period=0 --force || true
-
-        sleep 30
-
-        echo "🔥 Removing CRDs..."
-        kubectl get crds | grep argoproj | awk '{print $1}' | xargs -r kubectl delete crd || true
-
-    # 🔥 APP CLEAN
+    # -------------------------------
+    # DELETE APP NAMESPACE
+    # -------------------------------
     - name: Delete Ecommerce Namespace
       continue-on-error: true
       run: |
-        kubectl delete namespace ecommerce --grace-period=0 --force || true
+        kubectl delete namespace ecommerce || true
         sleep 30
 
-    # 🔥 CLEAN ELB
-    - name: Cleanup LoadBalancers
+    # -------------------------------
+    # DELETE ARGOCD (SAFE)
+    # -------------------------------
+    - name: Delete ArgoCD Namespace
       continue-on-error: true
       run: |
-        aws elbv2 describe-load-balancers \
-          --query "LoadBalancers[].LoadBalancerArn" \
-          --output text | \
-        xargs -r -n1 aws elbv2 delete-load-balancer --load-balancer-arn || true
+        kubectl delete namespace argocd || true
+        sleep 30
 
-    # 🔥 CLEAN EBS
-    - name: Cleanup EBS
-      continue-on-error: true
-      run: |
-        aws ec2 describe-volumes \
-          --query "Volumes[?State=='available'].VolumeId" \
-          --output text | \
-        xargs -r -n1 aws ec2 delete-volume --volume-id || true
-
-    # 🔥 NODEGROUP
+    # -------------------------------
+    # DELETE NODEGROUP
+    # -------------------------------
     - name: Delete Nodegroup
       continue-on-error: true
       run: |
@@ -95,10 +88,8 @@ jobs:
           --cluster-name $CLUSTER_NAME \
           --nodegroup-name $NODEGROUP_NAME || true
 
-    - name: Wait stabilization
-      run: sleep 60
-
-    # 🔥 FINAL DESTROY
+    # -------------------------------
+    # FINAL DESTROY
+    # -------------------------------
     - name: Terraform Destroy
-      run: |
-        timeout 1200 terraform destroy -auto-approve || true
+      run: terraform destroy -auto-approve
