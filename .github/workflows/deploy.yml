@@ -71,9 +71,9 @@ jobs:
     # -------------------------------
     # CSI DRIVER (FIXED PROPERLY)
     # -------------------------------
-    - name: Install/Update EBS CSI Driver (FIXED)
+    - name: Install/Update EBS CSI Driver (FINAL FIX)
       run: |
-        echo "🚀 Ensuring EBS CSI Driver is installed..."
+        echo "🚀 Ensuring EBS CSI Driver is ready..."
 
         ROLE_ARN=$(aws iam list-roles \
           --query "Roles[?contains(RoleName, 'AmazonEKS_EBS_CSI_DriverRole')].Arn" \
@@ -86,8 +86,39 @@ jobs:
           --cluster-name $CLUSTER_NAME \
           --addon-name aws-ebs-csi-driver >/dev/null 2>&1; then
 
-          echo "🔁 Addon exists → updating..."
+          echo "🔍 Addon exists → checking status..."
 
+          STATUS=$(aws eks describe-addon \
+            --cluster-name $CLUSTER_NAME \
+            --addon-name aws-ebs-csi-driver \
+            --query "addon.status" \
+            --output text)
+
+          echo "Current status: $STATUS"
+
+          # If still creating → wait
+          if [ "$STATUS" = "CREATING" ]; then
+            echo "⏳ Addon is still creating → waiting..."
+
+            for i in {1..30}; do
+              STATUS=$(aws eks describe-addon \
+                --cluster-name $CLUSTER_NAME \
+                --addon-name aws-ebs-csi-driver \
+                --query "addon.status" \
+                --output text)
+
+              echo "Status: $STATUS"
+
+              if [ "$STATUS" = "ACTIVE" ]; then
+                echo "✅ Addon is ACTIVE"
+                break
+              fi
+
+              sleep 20
+            done
+          fi
+
+          echo "🔁 Updating addon..."
           aws eks update-addon \
             --cluster-name $CLUSTER_NAME \
             --addon-name aws-ebs-csi-driver \
