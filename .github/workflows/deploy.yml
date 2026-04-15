@@ -126,15 +126,30 @@ jobs:
 
         kubectl create namespace argocd || true
 
+        # install CRDs first (important) 
         kubectl apply --server-side \
-          -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+          -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/crds.yaml
+        
+        # install main components
+        kubectl apply --server-side \
+          -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml  
+        
+        echo "🔍 Checking resources..."
+        kubectl get all -n argocd || true  
 
     - name: Wait ArgoCD Pods Exist
       run: |
         echo "⏳ Waiting for ArgoCD pods..."
 
         for i in {1..40}; do
-          kubectl get pods -n argocd | grep argocd-server && break
+          COUNT=$(kubectl get pods -n argocd --no-headers 2>/dev/null | wc -l)
+
+          if [ "$COUNT" -gt 0 ]; then
+            echo "✅ ArgoCD pods created"
+            kubectl get pods -n argocd
+            break
+          fi
+          
           echo "Waiting for ArgoCD pods... ($i)"
           sleep 10
         done
