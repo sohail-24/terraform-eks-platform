@@ -71,17 +71,26 @@ jobs:
     # -------------------------------
     # CSI DRIVER (FIXED PROPERLY)
     # -------------------------------
+    - name: Install EBS CSI Driver
+      run: |
+        echo "🚀 Installing EBS CSI Driver..."
+
+        aws eks create-addon \
+          --cluster-name $CLUSTER_NAME \
+          --addon-name aws-ebs-csi-driver \
+          --region $AWS_REGION || true
+
+      
     - name: Wait CSI Pods Exist
       run: |
         echo "⏳ Waiting for CSI pods..."
-        for i in {1..20}; do
+        for i in {1..30}; do
           kubectl get pods -n kube-system | grep ebs-csi && break
           echo "Waiting for CSI pods... ($i)"
           sleep 15
         done
-
-    - name: Wait CSI Ready
-      run: |
+          
+            
         kubectl wait --for=condition=Ready pods \
           -l app.kubernetes.io/name=aws-ebs-csi-driver \
           -n kube-system --timeout=600s
