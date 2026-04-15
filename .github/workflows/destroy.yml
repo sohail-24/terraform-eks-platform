@@ -30,13 +30,13 @@ jobs:
         aws-region: ${{ env.AWS_REGION }}
 
     # -------------------------------
-    # TERRAFORM INIT
+    # INIT
     # -------------------------------
     - name: Terraform Init
       run: terraform init
 
     # -------------------------------
-    # CONNECT CLUSTER (OPTIONAL)
+    # CONNECT CLUSTER
     # -------------------------------
     - name: Configure kubeconfig
       continue-on-error: true
@@ -46,15 +46,16 @@ jobs:
           --name $CLUSTER_NAME || true
 
     # -------------------------------
-    # DELETE APPLICATION (ARGO)
+    # DELETE ARGO APP
     # -------------------------------
     - name: Delete ArgoCD Application
       continue-on-error: true
       run: |
         kubectl delete application django-ecommerce -n argocd || true
+        sleep 10
 
     # -------------------------------
-    # DELETE APP NAMESPACE
+    # DELETE APP
     # -------------------------------
     - name: Delete Ecommerce Namespace
       continue-on-error: true
@@ -63,33 +64,17 @@ jobs:
         sleep 30
 
     # -------------------------------
-    # DELETE ARGOCD (SAFE)
+    # DELETE ARGOCD
     # -------------------------------
     - name: Delete ArgoCD Namespace
       continue-on-error: true
       run: |
         kubectl delete namespace argocd || true
+        kubectl delete namespace default || true
         sleep 30
 
     # -------------------------------
-    # DELETE NODEGROUP
-    # -------------------------------
-    - name: Delete Nodegroup
-      continue-on-error: true
-      run: |
-        aws eks delete-nodegroup \
-          --cluster-name $CLUSTER_NAME \
-          --nodegroup-name $NODEGROUP_NAME || true
-
-    - name: Wait Nodegroup Delete
-      continue-on-error: true
-      run: |
-        aws eks wait nodegroup-deleted \
-          --cluster-name $CLUSTER_NAME \
-          --nodegroup-name $NODEGROUP_NAME || true
-
-    # -------------------------------
-    # FINAL DESTROY
+    # FINAL INFRA DESTROY
     # -------------------------------
     - name: Terraform Destroy
       run: terraform destroy -auto-approve
