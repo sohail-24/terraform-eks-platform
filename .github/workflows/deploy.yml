@@ -5,6 +5,11 @@ on:
   push:
     branches: [ main ]
 
+# ✅ Prevent parallel runs (VERY IMPORTANT)
+concurrency:
+  group: eks-deploy
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -17,6 +22,9 @@ jobs:
 
     steps:
 
+    # -------------------------------
+    # SETUP
+    # -------------------------------
     - uses: actions/checkout@v4
     - uses: hashicorp/setup-terraform@v3
     - uses: azure/setup-kubectl@v4
@@ -27,17 +35,29 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
+    # -------------------------------
+    # TERRAFORM
+    # -------------------------------
     - name: Terraform Init
       run: terraform init
+
+    - name: Terraform Plan
+      run: terraform plan
 
     - name: Terraform Apply
       run: terraform apply -auto-approve
 
+    # -------------------------------
+    # EKS READY
+    # -------------------------------
     - name: Wait Cluster
       run: aws eks wait cluster-active --name $CLUSTER_NAME
 
     - name: Configure kubeconfig
       run: aws eks update-kubeconfig --name $CLUSTER_NAME
+
+    - name: Verify Cluster Access
+      run: kubectl get nodes
 
     - name: Wait Nodegroup
       run: |
@@ -45,29 +65,59 @@ jobs:
           --cluster-name $CLUSTER_NAME \
           --nodegroup-name $NODEGROUP_NAME
 
-    - name: Wait Nodes
+    - name: Wait Nodes Ready
       run: kubectl wait --for=condition=Ready nodes --all --timeout=600s
 
-    - name: Wait CSI
+    # -------------------------------
+    # CSI DRIVER (FIXED PROPERLY)
+    # -------------------------------
+    - name: Wait CSI Pods Exist
+      run: |
+        echo "⏳ Waiting for CSI pods..."
+        for i in {1..20}; do
+          kubectl get pods -n kube-system | grep ebs-csi && break
+          echo "Waiting for CSI pods... ($i)"
+          sleep 15
+        done
+
+    - name: Wait CSI Ready
       run: |
         kubectl wait --for=condition=Ready pods \
           -l app.kubernetes.io/name=aws-ebs-csi-driver \
           -n kube-system --timeout=600s
 
-    - name: Wait ArgoCD
+    # -------------------------------
+    # INSTALL ARGOCD
+    # -------------------------------
+    - name: Install ArgoCD
+      run: |
+        kubectl create namespace argocd || true
+        kubectl apply -n argocd \
+          -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+    - name: Wait ArgoCD Pods Exist
+      run: |
+        echo "⏳ Waiting for ArgoCD pods..."
+        for i in {1..30}; do
+          kubectl get pods -n argocd | grep argocd-server && break
+          echo "Waiting for ArgoCD pods... ($i)"
+          sleep 10
+        done
+
+    - name: Wait ArgoCD Ready
       run: |
         kubectl wait --for=condition=Ready pods \
-          -n argocd \
-          -l app.kubernetes.io/part-of=argocd \
-          --timeout=600s
+          -n argocd --all --timeout=600s
 
+    # -------------------------------
+    # DEPLOY APPLICATION
+    # -------------------------------
     - name: Apply Argo App
       run: kubectl apply -f argocd/app.yaml
 
-    # 🔥 NEW STEP (CRITICAL)
     - name: Wait for ArgoCD Sync
       run: |
-        echo "⏳ Waiting for ArgoCD to sync app..."
+        echo "⏳ Waiting for ArgoCD sync..."
 
         for i in {1..40}; do
           STATUS=$(kubectl get application django-ecommerce -n argocd -o jsonpath='{.status.sync.status}')
@@ -77,19 +127,33 @@ jobs:
             exit 0
           fi
 
-          echo "Waiting... ($i)"
+          echo "Waiting sync... ($i)"
           sleep 15
         done
 
-        echo "❌ ArgoCD did not sync"
+        echo "❌ ArgoCD sync failed"
         kubectl get application django-ecommerce -n argocd -o yaml
         exit 1
 
-    - name: Wait LB
+    # -------------------------------
+    # LOAD BALANCER
+    # -------------------------------
+    - name: Wait LoadBalancer
       run: |
+        echo "⏳ Waiting for LoadBalancer..."
+
         for i in {1..40}; do
           LB=$(kubectl get svc django -n ecommerce -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-          [ ! -z "$LB" ] && echo "🌍 $LB" && exit 0
+
+          if [ ! -z "$LB" ]; then
+            echo "🌍 Application URL: http://$LB"
+            exit 0
+          fi
+
+          echo "Waiting LB... ($i)"
           sleep 15
         done
+
+        echo "❌ LoadBalancer not ready"
+        kubectl get svc -n ecommerce
         exit 1
