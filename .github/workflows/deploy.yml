@@ -71,14 +71,22 @@ jobs:
     # -------------------------------
     # CSI DRIVER (FIXED PROPERLY)
     # -------------------------------
-    - name: Install EBS CSI Driver
+    - name: Install EBS CSI Driver (with IAM)
       run: |
-        echo "🚀 Installing EBS CSI Driver..."
+        echo "🚀 Installing EBS CSI Driver with IAM role..."
+
+        ROLE_ARN=$(aws iam list-roles \
+          --query "Roles[?contains(RoleName, 'AmazonEKS_EBS_CSI_DriverRole')].Arn" \
+          --output text)
+
+        echo "Using Role: $ROLE_ARN"
 
         aws eks create-addon \
           --cluster-name $CLUSTER_NAME \
           --addon-name aws-ebs-csi-driver \
+          --service-account-role-arn $ROLE_ARN \
           --region $AWS_REGION || true
+      
 
       
     - name: Wait CSI Pods Exist
