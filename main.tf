@@ -101,11 +101,11 @@ module "iam" {
 # EBS CSI (TEMPORARILY DISABLED)
 ############################################
 
-#module "ebs_csi" {
-#  source = "./platform/ebs-csi"
+module "ebs_csi" {
+  source = "./platform/ebs-csi"
 
-#  oidc_provider_arn = module.eks.oidc_provider_arn
-#}
+  oidc_provider_arn = module.eks.oidc_provider_arn
+}
 
 ############################################
 # 🔥 CLEANUP BEFORE DESTROY (VERY IMPORTANT) (DISABLED - HANDLED BY destroy.yml)
