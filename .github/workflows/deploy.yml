@@ -106,16 +106,34 @@ jobs:
     # -------------------------------
     # INSTALL ARGOCD
     # -------------------------------
-    - name: Install ArgoCD
+    - name: Cleanup ArgoCD (IMPORTANT)
       run: |
+        echo "🧹 Cleaning old ArgoCD..."
+
+        kubectl delete namespace argocd --ignore-not-found=true
+
+        kubectl delete crd \
+          applications.argoproj.io \
+          applicationsets.argoproj.io \
+          appprojects.argoproj.io \
+          --ignore-not-found=true
+
+        sleep 20
+
+    - name: Install ArgoCD (fixed)
+      run: |
+        echo "🚀 Installing ArgoCD..."
+
         kubectl create namespace argocd || true
-        kubectl apply -n argocd \
+
+        kubectl apply --server-side \
           -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
     - name: Wait ArgoCD Pods Exist
       run: |
         echo "⏳ Waiting for ArgoCD pods..."
-        for i in {1..30}; do
+
+        for i in {1..40}; do
           kubectl get pods -n argocd | grep argocd-server && break
           echo "Waiting for ArgoCD pods... ($i)"
           sleep 10
