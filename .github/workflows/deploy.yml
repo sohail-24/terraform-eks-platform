@@ -89,19 +89,33 @@ jobs:
       
 
       
-    - name: Wait CSI Pods Exist
+    - name: Wait CSI Driver Ready (FIXED)
       run: |
-        echo "⏳ Waiting for CSI pods..."
-        for i in {1..30}; do
-          kubectl get pods -n kube-system | grep ebs-csi && break
-          echo "Waiting for CSI pods... ($i)"
-          sleep 15
+        echo "⏳ Waiting for EBS CSI Addon..."
+
+        # Wait until addon becomes ACTIVE
+        for i in {1..40}; do
+          STATUS=$(aws eks describe-addon \
+            --cluster-name $CLUSTER_NAME \
+            --addon-name aws-ebs-csi-driver \
+            --query "addon.status" \
+            --output text)
+
+          echo "Addon status: $STATUS"
+
+          if [ "$STATUS" = "ACTIVE" ]; then
+            echo "✅ CSI Addon Active"
+            break
+          fi
+
+          sleep 20
         done
-          
-            
+
+        echo "⏳ Waiting for CSI pods..."
+
         kubectl wait --for=condition=Ready pods \
           -l app.kubernetes.io/name=aws-ebs-csi-driver \
-          -n kube-system --timeout=600s
+          -n kube-system --timeout=900s
 
     # -------------------------------
     # INSTALL ARGOCD
